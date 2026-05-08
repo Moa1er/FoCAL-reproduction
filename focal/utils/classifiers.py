@@ -299,12 +299,29 @@ class PRLC_R50:
             num_classes=len(prompts),
         ).to(device)
 
-        prlc_dict = torch.load(ckpt, map_location=device)["state_dict"]
-        prediction_network_params = {
-            ".".join(k.split(".")[1:]): v
-            for k, v in prlc_dict.items()
-            if "prediction_network" in k
-        }
+        ckpt_dict = torch.load(ckpt, map_location=device)
+        if "state_dict" in ckpt_dict:
+            prlc_dict = ckpt_dict["state_dict"]
+            prediction_network_params = {
+                ".".join(k.split(".")[1:]): v
+                for k, v in prlc_dict.items()
+                if "prediction_network" in k
+            }
+        elif "prediction_network_state_dict" in ckpt_dict:
+            prediction_network_params = ckpt_dict["prediction_network_state_dict"]
+            mapped_params = {}
+            for k, v in prediction_network_params.items():
+                if k.startswith("encoder.") or k.startswith("predictor."):
+                    mapped_params[k] = v
+                elif k.startswith("fc."):
+                    mapped_params[k.replace("fc.", "predictor.", 1)] = v
+                elif k.startswith("head."):
+                    mapped_params[k.replace("head.", "predictor.", 1)] = v
+                else:
+                    mapped_params[f"encoder.{k}"] = v
+            prediction_network_params = mapped_params
+        else:
+            raise KeyError("Checkpoint does not contain 'state_dict' or 'prediction_network_state_dict'")
         self.model.load_state_dict(prediction_network_params)
 
         self.model.eval().to(self.device)
@@ -361,12 +378,29 @@ class PRLC_ViTB:
             num_classes=len(prompts),
         ).to(device)
 
-        prlc_dict = torch.load(ckpt, map_location=device)["state_dict"]
-        prediction_network_params = {
-            ".".join(k.split(".")[1:]): v
-            for k, v in prlc_dict.items()
-            if "prediction_network" in k
-        }
+        ckpt_dict = torch.load(ckpt, map_location=device)
+        if "state_dict" in ckpt_dict:
+            prlc_dict = ckpt_dict["state_dict"]
+            prediction_network_params = {
+                ".".join(k.split(".")[1:]): v
+                for k, v in prlc_dict.items()
+                if "prediction_network" in k
+            }
+        elif "prediction_network_state_dict" in ckpt_dict:
+            prediction_network_params = ckpt_dict["prediction_network_state_dict"]
+            mapped_params = {}
+            for k, v in prediction_network_params.items():
+                if k.startswith("encoder.") or k.startswith("predictor."):
+                    mapped_params[k] = v
+                elif k.startswith("fc."):
+                    mapped_params[k.replace("fc.", "predictor.", 1)] = v
+                elif k.startswith("head."):
+                    mapped_params[k.replace("head.", "predictor.", 1)] = v
+                else:
+                    mapped_params[f"encoder.{k}"] = v
+            prediction_network_params = mapped_params
+        else:
+            raise KeyError("Checkpoint does not contain 'state_dict' or 'prediction_network_state_dict'")
         self.model.load_state_dict(prediction_network_params)
 
         self.model.eval().to(self.device)
@@ -449,3 +483,4 @@ class OVSEGClassifier:
         im = np.asarray(im)
         im = im[:, :, ::-1]  # ov-seg expects BGR
         return self._model.get_classification_clip(im, classes)[0]
+

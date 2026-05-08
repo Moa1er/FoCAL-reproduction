@@ -9,3 +9,6 @@ __pycache__
 
 # dataset folder
 datasets
+
+# ignore .pt files
+*.pt
