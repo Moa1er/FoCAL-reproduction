@@ -1,0 +1,14 @@
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+torch
+torchvision
+
+numpy
+tqdm
+tyro
+pandas
+omegaconf
+einops
+open_clip_torch
+transformers
+diffusers

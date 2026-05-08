@@ -1,0 +1,11 @@
+# python cache files
+__pycache__
+
+# python virtual env
+.venv
+
+# secret files
+.env
+
+# dataset folder
+datasets

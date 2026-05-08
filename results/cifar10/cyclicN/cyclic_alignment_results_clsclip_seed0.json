@@ -1,0 +1,144 @@
+{
+    "correct": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+    ],
+    "correct_after_rot": [
+        1,
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        0
+    ],
+    "correct_after_rot_and_unrot": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        1,
+        1,
+        1,
+        1
+    ],
+    "correct_after_rot_and_realign": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        1,
+        1,
+        1,
+        1
+    ],
+    "correct_upright_align": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1
+    ],
+    "thetas": [
+        0.0,
+        135.0,
+        45.0,
+        -180.0,
+        -45.0,
+        -45.0,
+        -45.0,
+        135.0,
+        -135.0,
+        -45.0
+    ],
+    "pose_accuracy": [
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        1,
+        1
+    ],
+    "pose_dist": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        90.0,
+        0.0,
+        0.0
+    ],
+    "inferred_angles": [
+        0.0,
+        -135.0,
+        -45.0,
+        -180.0,
+        45.0,
+        45.0,
+        45.0,
+        -45.0,
+        135.0,
+        45.0
+    ],
+    "labels": [
+        3,
+        8,
+        8,
+        0,
+        6,
+        6,
+        1,
+        6,
+        3,
+        1
+    ],
+    "args": {
+        "num_angles": 8,
+        "dataset": "cifar10",
+        "model": "clip",
+        "ckpt": null,
+        "N": 10,
+        "diffusion": {
+            "size": 256,
+            "model": "stabilityai/stable-diffusion-2-base",
+            "step_min": 500,
+            "step_max": 1000,
+            "step_stride": 100,
+            "batchsize": 10,
+            "factor": 0
+        },
+        "clip_energy": {
+            "logit_top_factor": -0.5,
+            "factor": 1.0
+        },
+        "seed": 0,
+        "device": "cuda:0"
+    }
+}
