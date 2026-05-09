@@ -390,12 +390,8 @@ class PRLC_ViTB:
             prediction_network_params = ckpt_dict["prediction_network_state_dict"]
             mapped_params = {}
             for k, v in prediction_network_params.items():
-                if k.startswith("encoder.") or k.startswith("predictor."):
-                    mapped_params[k] = v
-                elif k.startswith("fc."):
-                    mapped_params[k.replace("fc.", "predictor.", 1)] = v
-                elif k.startswith("head."):
-                    mapped_params[k.replace("head.", "predictor.", 1)] = v
+                if k.startswith("heads.head."):
+                    mapped_params[k.replace("heads.head.", "predictor.", 1)] = v
                 else:
                     mapped_params[f"encoder.{k}"] = v
             prediction_network_params = mapped_params
