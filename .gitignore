@@ -11,4 +11,8 @@ __pycache__
 datasets
 
 # ignore .pt files
-*.pt
+*.ptSTN/Pytorch-STN/data_cifar10/cifar-10-python.tar.gz
+
+# Large datasets/checkpoints
+STN/Pytorch-STN/data_cifar10/cifar-10-python.tar.gz
+STN/Pytorch-STN/experiments/stn_svhn/*.pth.tar
