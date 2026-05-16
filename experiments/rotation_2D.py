@@ -13,7 +13,7 @@ import torchvision.transforms as transforms
 from torchvision.transforms.functional import InterpolationMode, rotate as torch_rotate
 from tqdm import tqdm
 import tyro
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 from focal.utils.datasets import get_target_dataset, load_prompts
 from focal.utils.classifiers import (
@@ -31,6 +31,7 @@ from focal.utils.energy import (
     diff_energy,
     uncond_clip_energy,
 )
+from focal.utils.stn_candidate import STNArgs, load_stn_candidate_model
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,9 @@ class Args:
 
     clip_energy: CLIPEnergyArgs = CLIPEnergyArgs(factor=1.0)
     """Classifier energy arguments"""
+
+    stn: STNArgs = field(default_factory=STNArgs)
+    """Optional STN candidate arguments"""
 
     seed: int = 0
     """Random seed for reproducibility"""
@@ -131,27 +135,68 @@ def evaluate_img(
     pred_label = pred.argmax().cpu().item()
     return int(label == pred_label)
 
+def build_alignment_candidates(
+    im: torch.Tensor,
+    angles: np.ndarray,
+    stn_model: Union[torch.nn.Module, None] = None,
+) -> tuple[torch.Tensor, List[Union[float, None]], List[str]]:
+    """
+    Build the FoCAL candidate set.
 
-def generate_stats(results: Dict[str, List[Any]]) -> str:
-    """Generate statistics string from results.
+    Normal FoCAL candidates:
+        rotate(im, angle) for every angle in C_N
 
-    Args:
-        results: Dictionary containing experiment results
+    Optional STN candidate:
+        STN(im)
 
     Returns:
-        Formatted string of statistics
+        candidate_images: Tensor of shape (num_candidates, 3, 224, 224)
+        candidate_angles: angle for rotation candidates, None for STN
+        candidate_names: readable candidate names
     """
+
+    candidate_images = torch.cat(
+        [rotate(im.clone(), float(angle)) for angle in angles],
+        dim=0,
+    )
+    candidate_angles: List[Union[float, None]] = [float(angle) for angle in angles]
+    candidate_names = [f"rot_{float(angle):.1f}" for angle in angles]
+
+    if stn_model is not None:
+        stn_candidate = stn_model(im.clone())
+        candidate_images = torch.cat([candidate_images, stn_candidate], dim=0)
+        candidate_angles.append(None)
+        candidate_names.append("stn")
+
+    return candidate_images, candidate_angles, candidate_names
+
+def _mean_numeric(values: List[Any]) -> float:
+    numeric_values = [v for v in values if v is not None]
+    if len(numeric_values) == 0:
+        return float("nan")
+    return float(np.mean(numeric_values))
+
+
+def generate_stats(results: Dict[str, List[Any]]) -> str:
+    """Generate statistics string from results."""
+
     stats = [
         f"Default: {np.mean(results['correct']) * 100:.1f}%",
         f"Rot: {np.mean(results['correct_after_rot']) * 100:.1f}%",
         f"Rot+Unrot: {np.mean(results['correct_after_rot_and_unrot']) * 100:.1f}%",
         f"Rot+Realign: {np.mean(results['correct_after_rot_and_realign']) * 100:.1f}%",
         f"Upright+Realign: {np.mean(results['correct_upright_align']) * 100:.3f}%",
-        f"Pose Acc: {np.mean(results['pose_accuracy']) * 100:.3f}%",
-        f"Pose Dist: {np.mean(results['pose_dist']):.2f}",
+        f"Pose Acc: {_mean_numeric(results['pose_accuracy']) * 100:.3f}%",
+        f"Pose Dist: {_mean_numeric(results['pose_dist']):.2f}",
     ]
-    return " ".join(stats)
 
+    if "selected_is_stn" in results and len(results["selected_is_stn"]) > 0:
+        stats.append(f"STN Select: {np.mean(results['selected_is_stn']) * 100:.1f}%")
+
+    if "upright_selected_is_stn" in results and len(results["upright_selected_is_stn"]) > 0:
+        stats.append(f"Upright STN Select: {np.mean(results['upright_selected_is_stn']) * 100:.1f}%")
+
+    return " ".join(stats)
 
 def save_results(results: Dict[str, Any], args: Args) -> None:
     """Save experiment results to JSON file.
@@ -166,7 +211,8 @@ def save_results(results: Dict[str, Any], args: Args) -> None:
     save_dir = Path(f"results/{args.dataset}/cyclicN")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    json_filename = f"cyclic_alignment_results_cls{args.model}_seed{args.seed}.json"
+    stn_suffix = "_with_stn" if args.stn.enabled else ""
+    json_filename = f"cyclic_alignment_results_cls{args.model}{stn_suffix}_seed{args.seed}.json"
     save_path = save_dir / json_filename
 
     with open(save_path, "w") as f:
@@ -220,6 +266,10 @@ def main() -> None:
         else:
             clip_model = classifier
 
+    stn_model = None
+    if args.stn.enabled:
+        stn_model = load_stn_candidate_model(args.stn, device=device)
+
     diffusion_model = None
     octagon_mask = None
     if use_diffusion:
@@ -249,6 +299,11 @@ def main() -> None:
         "pose_accuracy": [],
         "pose_dist": [],
         "inferred_angles": [],
+        "selected_candidates": [],
+        "selected_is_stn": [],
+        "upright_inferred_angles": [],
+        "upright_selected_candidates": [],
+        "upright_selected_is_stn": [],
         "labels": [],
     }
 
@@ -278,15 +333,17 @@ def main() -> None:
             )
 
             if use_diffusion or use_clip_energy:
-                rot_ims = torch.cat(
-                    [rotate(im_rot.clone().squeeze().unsqueeze(0), a) for a in angles]
+                candidate_ims, candidate_angles, candidate_names = build_alignment_candidates(
+                    im_rot,
+                    angles,
+                    stn_model=stn_model,
                 )
 
                 diff_score = 0
                 if use_diffusion and diffusion_model is not None:
-                    masked_ims = rot_ims
+                    masked_ims = candidate_ims
                     if octagon_mask is not None:
-                        masked_ims = rot_ims * octagon_mask
+                        masked_ims = candidate_ims * octagon_mask
                     diff_score = diff_energy(
                         masked_ims, diffusion_model, args.diffusion
                     )
@@ -294,55 +351,68 @@ def main() -> None:
                 uncond_cls_score = 0
                 if use_clip_energy and clip_model is not None:
                     uncond_cls_score = uncond_clip_energy(
-                        rot_ims, clip_model, args.clip_energy
+                        candidate_ims, clip_model, args.clip_energy
                     )
 
                 final_score = (
                     args.diffusion.factor * diff_score
                     + args.clip_energy.factor * uncond_cls_score
                 )
-                best_angle = angles[np.argmin(final_score)]
+
+                best_idx = int(np.argmin(final_score))
+                best_angle = candidate_angles[best_idx]
+                best_candidate_name = candidate_names[best_idx]
             else:
                 raise ValueError("No alignment method specified")
 
-            im_realign = rotate(im_rot.clone(), best_angle)
+            im_realign = candidate_ims[best_idx : best_idx + 1]
             results["correct_after_rot_and_realign"].append(
                 evaluate_img(im_realign, classifier, label)
             )
             results["inferred_angles"].append(best_angle)
+            results["selected_candidates"].append(best_candidate_name)
+            results["selected_is_stn"].append(int(best_candidate_name == "stn"))
 
-            # Calculate pose accuracy and distance
-            # The ideal realignment angle is -theta, but wrapped around the circle.
-            # The model predicts `best_angle`. We remap the predicted angle.
-            best_angle_remapped = ((180 - best_angle) % 360) - 180
-            results["pose_accuracy"].append(
-                int(abs(theta - best_angle_remapped) < 1e-6)
-            )
+            # Calculate pose accuracy and distance.
+            # Pose metrics are only defined when the selected candidate is one of the
+            # discrete rotation candidates. If STN wins, there is no predicted C_N angle.
+            if best_angle is not None:
+                # The ideal realignment angle is -theta, but wrapped around the circle.
+                # The model predicts `best_angle`. We remap the predicted angle.
+                best_angle_remapped = ((180 - best_angle) % 360) - 180
+                results["pose_accuracy"].append(
+                    int(abs(theta - best_angle_remapped) < 1e-6)
+                )
 
-            theta_cossin = np.array(
-                [np.cos(theta * np.pi / 180), np.sin(theta * np.pi / 180)]
-            )
-            pred_cossin = np.array(
-                [
-                    np.cos(best_angle_remapped * np.pi / 180),
-                    np.sin(best_angle_remapped * np.pi / 180),
-                ]
-            )
-            cosine_similarity = (theta_cossin * pred_cossin).sum()
-            cosine_similarity = np.clip(cosine_similarity, -1, 1)
-            results["pose_dist"].append(np.rad2deg(np.arccos(cosine_similarity)))
+                theta_cossin = np.array(
+                    [np.cos(theta * np.pi / 180), np.sin(theta * np.pi / 180)]
+                )
+                pred_cossin = np.array(
+                    [
+                        np.cos(best_angle_remapped * np.pi / 180),
+                        np.sin(best_angle_remapped * np.pi / 180),
+                    ]
+                )
+                cosine_similarity = (theta_cossin * pred_cossin).sum()
+                cosine_similarity = np.clip(cosine_similarity, -1, 1)
+                results["pose_dist"].append(float(np.rad2deg(np.arccos(cosine_similarity))))
+            else:
+                results["pose_accuracy"].append(None)
+                results["pose_dist"].append(None)
 
             # Process upright alignment
             if use_diffusion or use_clip_energy:
-                rot_ims = torch.cat(
-                    [rotate(im.clone().squeeze().unsqueeze(0), a) for a in angles]
+                upright_candidate_ims, upright_candidate_angles, upright_candidate_names = build_alignment_candidates(
+                    im,
+                    angles,
+                    stn_model=stn_model,
                 )
 
                 diff_score = 0
                 if use_diffusion and diffusion_model is not None:
-                    masked_ims = rot_ims
+                    masked_ims = upright_candidate_ims
                     if octagon_mask is not None:
-                        masked_ims = rot_ims * octagon_mask
+                        masked_ims = upright_candidate_ims * octagon_mask
                     diff_score = diff_energy(
                         masked_ims, diffusion_model, args.diffusion
                     )
@@ -350,21 +420,27 @@ def main() -> None:
                 uncond_cls_score = 0
                 if use_clip_energy and clip_model is not None:
                     uncond_cls_score = uncond_clip_energy(
-                        rot_ims, clip_model, args.clip_energy
+                        upright_candidate_ims, clip_model, args.clip_energy
                     )
 
                 final_score = (
                     args.diffusion.factor * diff_score
                     + args.clip_energy.factor * uncond_cls_score
                 )
-                best_angle = angles[np.argmin(final_score)]
+
+                upright_best_idx = int(np.argmin(final_score))
+                upright_best_angle = upright_candidate_angles[upright_best_idx]
+                upright_best_candidate_name = upright_candidate_names[upright_best_idx]
             else:
                 raise ValueError("No alignment method specified")
 
-            im_realign = rotate(im.clone(), best_angle)
+            im_realign = upright_candidate_ims[upright_best_idx : upright_best_idx + 1]
             results["correct_upright_align"].append(
                 evaluate_img(im_realign, classifier, label)
             )
+            results["upright_inferred_angles"].append(upright_best_angle)
+            results["upright_selected_candidates"].append(upright_best_candidate_name)
+            results["upright_selected_is_stn"].append(int(upright_best_candidate_name == "stn"))
 
             # Update progress bar
             pbar.set_postfix_str(generate_stats(results))

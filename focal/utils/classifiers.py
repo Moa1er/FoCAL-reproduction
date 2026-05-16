@@ -66,7 +66,12 @@ class CLIPClassifier:
         clip_model, _, _ = create_model_and_transforms(
             "ViT-H-14", pretrained="laion2b_s32b_b79k"
         )
+        # Cheaper alternative:
+        # clip_model, _, _ = create_model_and_transforms(
+        #    "ViT-B-32", pretrained="laion2b_s34b_b79k"
+        # )
         clip_model.eval().to(self.device)
+        #clip_tokenizer = get_tokenizer("ViT-B-32")
         clip_tokenizer = get_tokenizer("ViT-H-14")
         return clip_model, clip_preprocess, clip_tokenizer
 
