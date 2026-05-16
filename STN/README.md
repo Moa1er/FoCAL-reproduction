@@ -1,11 +1,13 @@
 Cloned https://github.com/aicaffeinelife/Pytorch-STN.git
 
-Chekc their README for training instructions
+Check their README for training instructions
 
 The trained STN is on gitignore, since the file was too big
 
-gpu-check.py: Checking if I have a working GPU
+Added files that were not in the original repo:
 
-stn_visual_outputs/: The outputs of the trained STN
+- gpu-check.py: Checking if I have a working GPU
 
-visualize_stn_outputs.py: the script to het the said outputs of the trained STN
+- stn_visual_outputs/: The outputs of the trained STN
+
+- visualize_stn_outputs.py: the script to het the said outputs of the trained STN
