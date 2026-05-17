@@ -68,3 +68,5 @@ The `python -m experiments.rotation_2D` script accepts the following arguments:
 
 - **`device`** (str, default: `"cuda:0"`):
   Device to run the experiment on (e.g., `"cuda:0"`, `"cpu"`).
+
+  python -m experiments.rotation_2D --model prlc_r50 --ckpt C:\github\FoCAL-reproduction\checkpoints\prlc_resnet50_cifar10_c8.pt
