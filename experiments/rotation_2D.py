@@ -18,6 +18,7 @@ from dataclasses import dataclass, asdict, field
 from focal.utils.datasets import get_target_dataset, load_prompts
 from focal.utils.classifiers import (
     CLIPClassifier,
+    SigLIP2Classifier,
     DINOv2Classifier,
     ResNet50,
     ViTB,
@@ -48,8 +49,11 @@ class Args:
     dataset: Literal["cifar10", "cifar100", "stl10", "imagenet"] = "cifar10"
     """Dataset to use for experiments"""
 
-    model: Literal["clip", "resnet", "vitb", "dino", "prlc_r50", "prlc_vit"] = "clip"
+    model: Literal["clip", "siglip", "resnet", "vitb", "dino", "prlc_r50", "prlc_vit"] = "clip"
     """Model architecture for downstream classification"""
+
+    logits_model: Literal["clip", "siglip", "dino"] = "clip"
+    """Model architecture to calculate unsupervised logit energies from"""
 
     ckpt: Union[str, None] = None
     """Path to the pretrained checkpoint for the model; only used for PRLC models"""
@@ -240,6 +244,7 @@ def main() -> None:
     # Initialize classifier
     classifier_map = {
         "clip": CLIPClassifier,
+        "siglip": SigLIP2Classifier,
         "resnet": ResNet50,
         "vitb": ViTB,
         "dino": DINOv2Classifier,
@@ -259,12 +264,16 @@ def main() -> None:
             "Need to use at least one alignment method. Did you mean to set clip_energy.factor or diffusion.factor to a positive value?"
         )
     # Initialize alignment models
-    clip_model = None
+    logits_eval_model = None
     if use_clip_energy:
-        if args.model != "clip":
-            clip_model = CLIPClassifier(prompts, dataset=args.dataset, device=device)
+        if args.logits_model == args.model:
+            logits_eval_model = classifier
+        elif args.logits_model == "siglip":
+            logits_eval_model = SigLIP2Classifier(prompts, dataset=args.dataset, device=device)
+        elif args.logits_model == "dino":
+            logits_eval_model = DINOv2Classifier(prompts, dataset=args.dataset, device=device)
         else:
-            clip_model = classifier
+            logits_eval_model = CLIPClassifier(prompts, dataset=args.dataset, device=device)
 
     stn_model = None
     if args.stn.enabled:
@@ -349,9 +358,9 @@ def main() -> None:
                     )
 
                 uncond_cls_score = 0
-                if use_clip_energy and clip_model is not None:
+                if use_clip_energy and logits_eval_model is not None:
                     uncond_cls_score = uncond_clip_energy(
-                        candidate_ims, clip_model, args.clip_energy
+                        candidate_ims, logits_eval_model, args.clip_energy
                     )
 
                 final_score = (
@@ -418,9 +427,9 @@ def main() -> None:
                     )
 
                 uncond_cls_score = 0
-                if use_clip_energy and clip_model is not None:
+                if use_clip_energy and logits_eval_model is not None:
                     uncond_cls_score = uncond_clip_energy(
-                        upright_candidate_ims, clip_model, args.clip_energy
+                        upright_candidate_ims, logits_eval_model, args.clip_energy
                     )
 
                 final_score = (

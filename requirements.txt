@@ -12,3 +12,5 @@ einops
 open_clip_torch
 transformers
 diffusers
+protobuf
+sentencepiece

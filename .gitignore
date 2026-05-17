@@ -14,5 +14,7 @@ datasets
 *.ptSTN/Pytorch-STN/data_cifar10/cifar-10-python.tar.gz
 
 # Large datasets/checkpoints
-STN/Pytorch-STN/data_cifar10/cifar-10-python.tar.gz
-STN/Pytorch-STN/experiments/stn_svhn/*.pth.tar
+stn-training-repo/Pytorch-STN/data_cifar10/cifar-10-python.tar.gz
+stn-training-repo/Pytorch-STN/experiments/stn_svhn/*.pth.tar
+
+checkpoints

@@ -45,11 +45,18 @@ The `python -m experiments.rotation_2D` script accepts the following arguments:
 - **`model`** (str, default: `"clip"`):
   Model architecture for downstream classification. Options:
   - `"clip"`
+  - `"siglip"`
   - `"resnet"`
   - `"vitb"`
   - `"dino"`
   - `"prlc_r50"`
   - `"prlc_vit"`
+
+- **`logits_model`** (str, default: `"clip"`):
+  Model architecture to calculate unsupervised logit energies from for alignment. Options:
+  - `"clip"`
+  - `"siglip"`
+  - `"dino"`
 
 - **`ckpt`** (str, default: `None`):
   Path to the pretrained checkpoint for the model (only used for PRLC models).
