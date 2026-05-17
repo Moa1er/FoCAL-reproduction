@@ -11,4 +11,7 @@ __pycache__
 datasets
 
 # ignore .pt files
-*.pt
+*.pt.DS_Store
+results/
+
+
