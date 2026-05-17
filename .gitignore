@@ -13,5 +13,6 @@ datasets
 # ignore .pt files
 *.pt.DS_Store
 results/
+.DS_Store
 
 
