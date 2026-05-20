@@ -13,6 +13,7 @@ datasets
 # ignore .pt files
 *.pt.DS_Store
 results/
+checkpoints/
 .DS_Store
 
 
