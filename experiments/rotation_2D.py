@@ -243,11 +243,17 @@ def main() -> None:
             octagon_mask, 45, interpolation=InterpolationMode.NEAREST
         )
 
+    # OPTIMIZATION: Initialize model and preprocessor outside the loop
     dino_model = None
+    dino_preprocess = None
     if use_dino_energy:
         # Load raw base model, send to device, set to eval
         dino_model = AutoModel.from_pretrained(args.dino_energy.model_id)
         dino_model.eval().to(device)
+        dino_preprocess = transforms.Compose([
+            transforms.Resize(224, interpolation=InterpolationMode.BICUBIC),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
 
     # Setup experiment parameters
     num_samples = len(dataset) if args.N == -1 else args.N
@@ -319,17 +325,7 @@ def main() -> None:
                         )
 
                 dino_score = 0
-                if use_dino_energy and dino_model is not None:
-                    dino_preprocess = transforms.Compose(
-                        [
-                            transforms.Resize(
-                                224, interpolation=InterpolationMode.BICUBIC
-                            ),
-                            transforms.Normalize(
-                                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                            ),
-                        ]
-                    )
+                if use_dino_energy and dino_model is not None and dino_preprocess is not None:
                     dino_score = dino_variance_energy(
                         dino_preprocess(rot_ims), dino_model, args.dino_energy
                     )
@@ -395,17 +391,7 @@ def main() -> None:
                         )
 
                 dino_score = 0
-                if use_dino_energy and dino_model is not None:
-                    dino_preprocess = transforms.Compose(
-                        [
-                            transforms.Resize(
-                                224, interpolation=InterpolationMode.BICUBIC
-                            ),
-                            transforms.Normalize(
-                                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                            ),
-                        ]
-                    )
+                if use_dino_energy and dino_model is not None and dino_preprocess is not None:
                     dino_score = dino_variance_energy(
                         dino_preprocess(rot_ims), dino_model, args.dino_energy
                     )
@@ -430,7 +416,6 @@ def main() -> None:
     # Print and save final results
     print(generate_stats(results))
     save_results(results, args)
-
 
 if __name__ == "__main__":
     main()
