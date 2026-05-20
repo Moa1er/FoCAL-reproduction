@@ -221,7 +221,7 @@ def main() -> None:
         raise ValueError(
             "Need to use at least one alignment method. Did you mean to set clip_energy.factor, diffusion.factor, or dino_energy.factor to a positive value?"
         )
-        
+
     # Initialize alignment models
     clip_model = None
     if use_clip_energy:
@@ -309,16 +309,27 @@ def main() -> None:
 
                 uncond_cls_score = 0
                 if use_clip_energy and clip_model is not None:
-                    uncond_cls_score = uncond_clip_energy(
-                        rot_ims, clip_model, args.clip_energy
-                    )
+                    if args.clip_energy.use_entropy:
+                        uncond_cls_score = entropy_clip_energy(
+                            rot_ims, clip_model, args.clip_energy
+                        )
+                    else:
+                        uncond_cls_score = uncond_clip_energy(
+                            rot_ims, clip_model, args.clip_energy
+                        )
 
                 dino_score = 0
                 if use_dino_energy and dino_model is not None:
-                    dino_preprocess = transforms.Compose([
-                        transforms.Resize(224, interpolation=InterpolationMode.BICUBIC),
-                        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-                    ])
+                    dino_preprocess = transforms.Compose(
+                        [
+                            transforms.Resize(
+                                224, interpolation=InterpolationMode.BICUBIC
+                            ),
+                            transforms.Normalize(
+                                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                            ),
+                        ]
+                    )
                     dino_score = dino_variance_energy(
                         dino_preprocess(rot_ims), dino_model, args.dino_energy
                     )
@@ -374,16 +385,27 @@ def main() -> None:
 
                 uncond_cls_score = 0
                 if use_clip_energy and clip_model is not None:
-                    uncond_cls_score = uncond_clip_energy(
-                        rot_ims, clip_model, args.clip_energy
-                    )
+                    if args.clip_energy.use_entropy:
+                        uncond_cls_score = entropy_clip_energy(
+                            rot_ims, clip_model, args.clip_energy
+                        )
+                    else:
+                        uncond_cls_score = uncond_clip_energy(
+                            rot_ims, clip_model, args.clip_energy
+                        )
 
                 dino_score = 0
                 if use_dino_energy and dino_model is not None:
-                    dino_preprocess = transforms.Compose([
-                        transforms.Resize(224, interpolation=InterpolationMode.BICUBIC),
-                        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-                    ])
+                    dino_preprocess = transforms.Compose(
+                        [
+                            transforms.Resize(
+                                224, interpolation=InterpolationMode.BICUBIC
+                            ),
+                            transforms.Normalize(
+                                mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                            ),
+                        ]
+                    )
                     dino_score = dino_variance_energy(
                         dino_preprocess(rot_ims), dino_model, args.dino_energy
                     )
@@ -408,6 +430,7 @@ def main() -> None:
     # Print and save final results
     print(generate_stats(results))
     save_results(results, args)
+
 
 if __name__ == "__main__":
     main()
