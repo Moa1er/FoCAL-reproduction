@@ -12,3 +12,23 @@ datasets
 
 # ignore .pt files
 *.pt
+# python cache files
+__pycache__
+
+# python virtual env
+.venv
+
+# secret files
+.env
+
+# dataset folder
+datasets
+
+# ignore .pt files
+*.pt.DS_Store
+results/
+checkpoints/
+.DS_Store
+*.zip
+
+

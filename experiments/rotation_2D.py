@@ -15,6 +15,8 @@ from tqdm import tqdm
 import tyro
 from dataclasses import dataclass, asdict
 
+from transformers import AutoModel
+
 from focal.utils.datasets import get_target_dataset, load_prompts
 from focal.utils.classifiers import (
     CLIPClassifier,
@@ -28,8 +30,11 @@ from focal.utils.diffusion import StableDiffusion
 from focal.utils.energy import (
     DiffusionEnergyArgs,
     CLIPEnergyArgs,
+    DINOEnergyArgs,
     diff_energy,
     uncond_clip_energy,
+    entropy_clip_energy,
+    dino_variance_energy,
 )
 
 
@@ -67,6 +72,9 @@ class Args:
 
     device: str = "cuda:0"
     """Device to run the experiment on"""
+
+    dino_energy: DINOEnergyArgs = DINOEnergyArgs(factor=0.0)
+    """DINO variance energy arguments"""
 
 
 def resize_crop(im: torch.Tensor, size: int = 224) -> torch.Tensor:
@@ -207,11 +215,13 @@ def main() -> None:
     # Validate configuration
     use_diffusion = args.diffusion.factor > 0
     use_clip_energy = args.clip_energy.factor > 0
+    use_dino_energy = args.dino_energy.factor > 0
 
-    if not (use_diffusion or use_clip_energy):
+    if not (use_diffusion or use_clip_energy or use_dino_energy):
         raise ValueError(
-            "Need to use at least one alignment method. Did you mean to set clip_energy.factor or diffusion.factor to a positive value?"
+            "Need to use at least one alignment method. Did you mean to set clip_energy.factor, diffusion.factor, or dino_energy.factor to a positive value?"
         )
+
     # Initialize alignment models
     clip_model = None
     if use_clip_energy:
@@ -232,6 +242,18 @@ def main() -> None:
         octagon_mask = torch_rotate(
             octagon_mask, 45, interpolation=InterpolationMode.NEAREST
         )
+
+    # OPTIMIZATION: Initialize model and preprocessor outside the loop
+    dino_model = None
+    dino_preprocess = None
+    if use_dino_energy:
+        # Load raw base model, send to device, set to eval
+        dino_model = AutoModel.from_pretrained(args.dino_energy.model_id)
+        dino_model.eval().to(device)
+        dino_preprocess = transforms.Compose([
+            transforms.Resize(224, interpolation=InterpolationMode.BICUBIC),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
 
     # Setup experiment parameters
     num_samples = len(dataset) if args.N == -1 else args.N
@@ -277,7 +299,7 @@ def main() -> None:
                 evaluate_img(im_unrot, classifier, label)
             )
 
-            if use_diffusion or use_clip_energy:
+            if use_diffusion or use_clip_energy or use_dino_energy:
                 rot_ims = torch.cat(
                     [rotate(im_rot.clone().squeeze().unsqueeze(0), a) for a in angles]
                 )
@@ -293,13 +315,25 @@ def main() -> None:
 
                 uncond_cls_score = 0
                 if use_clip_energy and clip_model is not None:
-                    uncond_cls_score = uncond_clip_energy(
-                        rot_ims, clip_model, args.clip_energy
+                    if args.clip_energy.use_entropy:
+                        uncond_cls_score = entropy_clip_energy(
+                            rot_ims, clip_model, args.clip_energy
+                        )
+                    else:
+                        uncond_cls_score = uncond_clip_energy(
+                            rot_ims, clip_model, args.clip_energy
+                        )
+
+                dino_score = 0
+                if use_dino_energy and dino_model is not None and dino_preprocess is not None:
+                    dino_score = dino_variance_energy(
+                        dino_preprocess(rot_ims), dino_model, args.dino_energy
                     )
 
                 final_score = (
                     args.diffusion.factor * diff_score
                     + args.clip_energy.factor * uncond_cls_score
+                    + args.dino_energy.factor * dino_score
                 )
                 best_angle = angles[np.argmin(final_score)]
             else:
@@ -312,8 +346,6 @@ def main() -> None:
             results["inferred_angles"].append(best_angle)
 
             # Calculate pose accuracy and distance
-            # The ideal realignment angle is -theta, but wrapped around the circle.
-            # The model predicts `best_angle`. We remap the predicted angle.
             best_angle_remapped = ((180 - best_angle) % 360) - 180
             results["pose_accuracy"].append(
                 int(abs(theta - best_angle_remapped) < 1e-6)
@@ -333,7 +365,7 @@ def main() -> None:
             results["pose_dist"].append(np.rad2deg(np.arccos(cosine_similarity)))
 
             # Process upright alignment
-            if use_diffusion or use_clip_energy:
+            if use_diffusion or use_clip_energy or use_dino_energy:
                 rot_ims = torch.cat(
                     [rotate(im.clone().squeeze().unsqueeze(0), a) for a in angles]
                 )
@@ -349,13 +381,25 @@ def main() -> None:
 
                 uncond_cls_score = 0
                 if use_clip_energy and clip_model is not None:
-                    uncond_cls_score = uncond_clip_energy(
-                        rot_ims, clip_model, args.clip_energy
+                    if args.clip_energy.use_entropy:
+                        uncond_cls_score = entropy_clip_energy(
+                            rot_ims, clip_model, args.clip_energy
+                        )
+                    else:
+                        uncond_cls_score = uncond_clip_energy(
+                            rot_ims, clip_model, args.clip_energy
+                        )
+
+                dino_score = 0
+                if use_dino_energy and dino_model is not None and dino_preprocess is not None:
+                    dino_score = dino_variance_energy(
+                        dino_preprocess(rot_ims), dino_model, args.dino_energy
                     )
 
                 final_score = (
                     args.diffusion.factor * diff_score
                     + args.clip_energy.factor * uncond_cls_score
+                    + args.dino_energy.factor * dino_score
                 )
                 best_angle = angles[np.argmin(final_score)]
             else:
@@ -372,7 +416,6 @@ def main() -> None:
     # Print and save final results
     print(generate_stats(results))
     save_results(results, args)
-
 
 if __name__ == "__main__":
     main()

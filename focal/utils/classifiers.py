@@ -103,27 +103,13 @@ class CLIPClassifier:
         clip_model: torch.nn.Module,
         clip_preprocess: transforms.Compose,
     ) -> torch.Tensor:
-        """Encode image using CLIP model.
-
-        Args:
-            im: Input image tensor
-            clip_model: CLIP model
-            clip_preprocess: Preprocessing transforms
-
-        Returns:
-            Encoded image embeddings
-        """
+        """Encode image using CLIP model (Batched)."""
         if len(im.shape) == 3:
             im = im.unsqueeze(0)
-        im_enc = torch.cat(
-            [
-                clip_model.encode_image(
-                    clip_preprocess(im_).to(self.device).unsqueeze(0)
-                ).cpu()
-                for im_ in im
-            ]
-        )
-        return im_enc
+
+        # Apply preprocessing natively across the batch of rotations to avoid sequential bottlenecks.
+        im_processed = clip_preprocess(im).to(self.device)
+        return clip_model.encode_image(im_processed).cpu()
 
     def _classifier(
         self,
@@ -321,7 +307,9 @@ class PRLC_R50:
                     mapped_params[f"encoder.{k}"] = v
             prediction_network_params = mapped_params
         else:
-            raise KeyError("Checkpoint does not contain 'state_dict' or 'prediction_network_state_dict'")
+            raise KeyError(
+                "Checkpoint does not contain 'state_dict' or 'prediction_network_state_dict'"
+            )
         self.model.load_state_dict(prediction_network_params)
 
         self.model.eval().to(self.device)
@@ -396,7 +384,9 @@ class PRLC_ViTB:
                     mapped_params[f"encoder.{k}"] = v
             prediction_network_params = mapped_params
         else:
-            raise KeyError("Checkpoint does not contain 'state_dict' or 'prediction_network_state_dict'")
+            raise KeyError(
+                "Checkpoint does not contain 'state_dict' or 'prediction_network_state_dict'"
+            )
         self.model.load_state_dict(prediction_network_params)
 
         self.model.eval().to(self.device)
@@ -479,4 +469,3 @@ class OVSEGClassifier:
         im = np.asarray(im)
         im = im[:, :, ::-1]  # ov-seg expects BGR
         return self._model.get_classification_clip(im, classes)[0]
-
