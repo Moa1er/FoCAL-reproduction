@@ -13,13 +13,14 @@ import torchvision.transforms as transforms
 from torchvision.transforms.functional import InterpolationMode, rotate as torch_rotate
 from tqdm import tqdm
 import tyro
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 from transformers import AutoModel
 
 from focal.utils.datasets import get_target_dataset, load_prompts
 from focal.utils.classifiers import (
     CLIPClassifier,
+    SigLIP2Classifier,
     DINOv2Classifier,
     ResNet50,
     ViTB,
@@ -36,6 +37,7 @@ from focal.utils.energy import (
     entropy_clip_energy,
     dino_variance_energy,
 )
+from focal.utils.stn_candidate import STNArgs, load_stn_candidate_model
 
 
 @dataclass(frozen=True)
@@ -52,8 +54,11 @@ class Args:
     dataset: Literal["cifar10", "cifar100", "stl10", "imagenet"] = "cifar10"
     """Dataset to use for experiments"""
 
-    model: Literal["clip", "resnet", "vitb", "dino", "prlc_r50", "prlc_vit"] = "clip"
+    model: Literal["clip", "siglip", "resnet", "vitb", "dino", "prlc_r50", "prlc_vit"] = "clip"
     """Model architecture for downstream classification"""
+
+    logits_model: Literal["clip", "siglip", "dino"] = "clip"
+    """Model architecture to calculate unsupervised logit energies from"""
 
     ckpt: Union[str, None] = None
     """Path to the pretrained checkpoint for the model; only used for PRLC models"""
@@ -67,14 +72,17 @@ class Args:
     clip_energy: CLIPEnergyArgs = CLIPEnergyArgs(factor=1.0)
     """Classifier energy arguments"""
 
+    dino_energy: DINOEnergyArgs = DINOEnergyArgs(factor=0.0)
+    """DINO variance energy arguments"""
+
+    stn: STNArgs = field(default_factory=STNArgs)
+    """Optional STN candidate arguments"""
+
     seed: int = 0
     """Random seed for reproducibility"""
 
     device: str = "cuda:0"
     """Device to run the experiment on"""
-
-    dino_energy: DINOEnergyArgs = DINOEnergyArgs(factor=0.0)
-    """DINO variance energy arguments"""
 
 
 def resize_crop(im: torch.Tensor, size: int = 224) -> torch.Tensor:
@@ -86,8 +94,8 @@ def resize_crop(im: torch.Tensor, size: int = 224) -> torch.Tensor:
     Returns:
         Resized and cropped image tensor of size (size, size)
     """
-    im = transforms.Resize(224)(im)
-    im = transforms.CenterCrop(224)(im)
+    im = transforms.Resize(size)(im)
+    im = transforms.CenterCrop(size)(im)
     return im
 
 
@@ -108,7 +116,7 @@ def rotate(im: torch.Tensor, angle: float) -> torch.Tensor:
 
     padding = int(
         224 * 0.4
-    )  # Excessively large padding to ensure no cropping after rotation
+    )  # excessively large padding to ensure no cropping after rotation
     impad = transforms.Pad(padding, padding_mode="edge")(im)
     impadrot = torch_rotate(impad, angle, interpolation=InterpolationMode.BILINEAR)
     return transforms.CenterCrop(224)(impadrot)
@@ -140,6 +148,47 @@ def evaluate_img(
     return int(label == pred_label)
 
 
+def build_alignment_candidates(
+    im: torch.Tensor,
+    angles: np.ndarray,
+    stn_model: Union[torch.nn.Module, None] = None,
+) -> tuple[torch.Tensor, List[Union[float, None]], List[str]]:
+    """Build the FoCAL candidate set.
+
+    Normal FoCAL candidates:
+        rotate(im, angle) for every angle in C_N
+
+    Optional STN candidate:
+        STN(im)
+
+    Returns:
+        candidate_images: Tensor of shape (num_candidates, 3, 224, 224)
+        candidate_angles: angle for rotation candidates, None for STN
+        candidate_names: readable candidate names
+    """
+    candidate_images = torch.cat(
+        [rotate(im.clone(), float(angle)) for angle in angles],
+        dim=0,
+    )
+    candidate_angles: List[Union[float, None]] = [float(angle) for angle in angles]
+    candidate_names = [f"rot_{float(angle):.1f}" for angle in angles]
+
+    if stn_model is not None:
+        stn_candidate = stn_model(im.clone())
+        candidate_images = torch.cat([candidate_images, stn_candidate], dim=0)
+        candidate_angles.append(None)
+        candidate_names.append("stn")
+
+    return candidate_images, candidate_angles, candidate_names
+
+
+def _mean_numeric(values: List[Any]) -> float:
+    numeric_values = [v for v in values if v is not None]
+    if len(numeric_values) == 0:
+        return float("nan")
+    return float(np.mean(numeric_values))
+
+
 def generate_stats(results: Dict[str, List[Any]]) -> str:
     """Generate statistics string from results.
 
@@ -155,9 +204,16 @@ def generate_stats(results: Dict[str, List[Any]]) -> str:
         f"Rot+Unrot: {np.mean(results['correct_after_rot_and_unrot']) * 100:.1f}%",
         f"Rot+Realign: {np.mean(results['correct_after_rot_and_realign']) * 100:.1f}%",
         f"Upright+Realign: {np.mean(results['correct_upright_align']) * 100:.3f}%",
-        f"Pose Acc: {np.mean(results['pose_accuracy']) * 100:.3f}%",
-        f"Pose Dist: {np.mean(results['pose_dist']):.2f}",
+        f"Pose Acc: {_mean_numeric(results['pose_accuracy']) * 100:.3f}%",
+        f"Pose Dist: {_mean_numeric(results['pose_dist']):.2f}",
     ]
+
+    if "selected_is_stn" in results and len(results["selected_is_stn"]) > 0:
+        stats.append(f"STN Select: {np.mean(results['selected_is_stn']) * 100:.1f}%")
+
+    if "upright_selected_is_stn" in results and len(results["upright_selected_is_stn"]) > 0:
+        stats.append(f"Upright STN Select: {np.mean(results['upright_selected_is_stn']) * 100:.1f}%")
+
     return " ".join(stats)
 
 
@@ -174,7 +230,8 @@ def save_results(results: Dict[str, Any], args: Args) -> None:
     save_dir = Path(f"results/{args.dataset}/cyclicN")
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    json_filename = f"cyclic_alignment_results_cls{args.model}_seed{args.seed}.json"
+    stn_suffix = "_with_stn" if args.stn.enabled else ""
+    json_filename = f"cyclic_alignment_results_cls{args.model}{stn_suffix}_seed{args.seed}.json"
     save_path = save_dir / json_filename
 
     with open(save_path, "w") as f:
@@ -202,6 +259,7 @@ def main() -> None:
     # Initialize classifier
     classifier_map = {
         "clip": CLIPClassifier,
+        "siglip": SigLIP2Classifier,
         "resnet": ResNet50,
         "vitb": ViTB,
         "dino": DINOv2Classifier,
@@ -225,10 +283,18 @@ def main() -> None:
     # Initialize alignment models
     clip_model = None
     if use_clip_energy:
-        if args.model != "clip":
-            clip_model = CLIPClassifier(prompts, dataset=args.dataset, device=device)
-        else:
+        if args.logits_model == args.model:
             clip_model = classifier
+        elif args.logits_model == "siglip":
+            clip_model = SigLIP2Classifier(prompts, dataset=args.dataset, device=device)
+        elif args.logits_model == "dino":
+            clip_model = DINOv2Classifier(prompts, dataset=args.dataset, device=device)
+        else:
+            clip_model = CLIPClassifier(prompts, dataset=args.dataset, device=device)
+
+    stn_model = None
+    if args.stn.enabled:
+        stn_model = load_stn_candidate_model(args.stn, device=device)
 
     diffusion_model = None
     octagon_mask = None
@@ -243,11 +309,10 @@ def main() -> None:
             octagon_mask, 45, interpolation=InterpolationMode.NEAREST
         )
 
-    # OPTIMIZATION: Initialize model and preprocessor outside the loop
     dino_model = None
     dino_preprocess = None
     if use_dino_energy:
-        # Load raw base model, send to device, set to eval
+        # load raw base model, send to device, set to eval
         dino_model = AutoModel.from_pretrained(args.dino_energy.model_id)
         dino_model.eval().to(device)
         dino_preprocess = transforms.Compose([
@@ -271,6 +336,11 @@ def main() -> None:
         "pose_accuracy": [],
         "pose_dist": [],
         "inferred_angles": [],
+        "selected_candidates": [],
+        "selected_is_stn": [],
+        "upright_inferred_angles": [],
+        "upright_selected_candidates": [],
+        "upright_selected_is_stn": [],
         "labels": [],
     }
 
@@ -299,35 +369,38 @@ def main() -> None:
                 evaluate_img(im_unrot, classifier, label)
             )
 
+            # Process rotated realignment
             if use_diffusion or use_clip_energy or use_dino_energy:
-                rot_ims = torch.cat(
-                    [rotate(im_rot.clone().squeeze().unsqueeze(0), a) for a in angles]
+                candidate_ims, candidate_angles, candidate_names = build_alignment_candidates(
+                    im_rot,
+                    angles,
+                    stn_model=stn_model,
                 )
 
                 diff_score = 0
                 if use_diffusion and diffusion_model is not None:
-                    masked_ims = rot_ims
+                    masked_ims = candidate_ims
                     if octagon_mask is not None:
-                        masked_ims = rot_ims * octagon_mask
+                        masked_ims = candidate_ims * octagon_mask
                     diff_score = diff_energy(
                         masked_ims, diffusion_model, args.diffusion
                     )
 
                 uncond_cls_score = 0
                 if use_clip_energy and clip_model is not None:
-                    if args.clip_energy.use_entropy:
+                    if hasattr(args.clip_energy, "use_entropy") and args.clip_energy.use_entropy:
                         uncond_cls_score = entropy_clip_energy(
-                            rot_ims, clip_model, args.clip_energy
+                            candidate_ims, clip_model, args.clip_energy
                         )
                     else:
                         uncond_cls_score = uncond_clip_energy(
-                            rot_ims, clip_model, args.clip_energy
+                            candidate_ims, clip_model, args.clip_energy
                         )
 
                 dino_score = 0
                 if use_dino_energy and dino_model is not None and dino_preprocess is not None:
                     dino_score = dino_variance_energy(
-                        dino_preprocess(rot_ims), dino_model, args.dino_energy
+                        dino_preprocess(candidate_ims), dino_model, args.dino_energy
                     )
 
                 final_score = (
@@ -335,65 +408,76 @@ def main() -> None:
                     + args.clip_energy.factor * uncond_cls_score
                     + args.dino_energy.factor * dino_score
                 )
-                best_angle = angles[np.argmin(final_score)]
+
+                best_idx = int(np.argmin(final_score))
+                best_angle = candidate_angles[best_idx]
+                best_candidate_name = candidate_names[best_idx]
             else:
                 raise ValueError("No alignment method specified")
 
-            im_realign = rotate(im_rot.clone(), best_angle)
+            im_realign = candidate_ims[best_idx : best_idx + 1]
             results["correct_after_rot_and_realign"].append(
                 evaluate_img(im_realign, classifier, label)
             )
             results["inferred_angles"].append(best_angle)
+            results["selected_candidates"].append(best_candidate_name)
+            results["selected_is_stn"].append(int(best_candidate_name == "stn"))
 
             # Calculate pose accuracy and distance
-            best_angle_remapped = ((180 - best_angle) % 360) - 180
-            results["pose_accuracy"].append(
-                int(abs(theta - best_angle_remapped) < 1e-6)
-            )
+            if best_angle is not None:
+                best_angle_remapped = ((180 - best_angle) % 360) - 180
+                results["pose_accuracy"].append(
+                    int(abs(theta - best_angle_remapped) < 1e-6)
+                )
 
-            theta_cossin = np.array(
-                [np.cos(theta * np.pi / 180), np.sin(theta * np.pi / 180)]
-            )
-            pred_cossin = np.array(
-                [
-                    np.cos(best_angle_remapped * np.pi / 180),
-                    np.sin(best_angle_remapped * np.pi / 180),
-                ]
-            )
-            cosine_similarity = (theta_cossin * pred_cossin).sum()
-            cosine_similarity = np.clip(cosine_similarity, -1, 1)
-            results["pose_dist"].append(np.rad2deg(np.arccos(cosine_similarity)))
+                theta_cossin = np.array(
+                    [np.cos(theta * np.pi / 180), np.sin(theta * np.pi / 180)]
+                )
+                pred_cossin = np.array(
+                    [
+                        np.cos(best_angle_remapped * np.pi / 180),
+                        np.sin(best_angle_remapped * np.pi / 180),
+                    ]
+                )
+                cosine_similarity = (theta_cossin * pred_cossin).sum()
+                cosine_similarity = np.clip(cosine_similarity, -1, 1)
+                results["pose_dist"].append(float(np.rad2deg(np.arccos(cosine_similarity))))
+            else:
+                results["pose_accuracy"].append(None)
+                results["pose_dist"].append(None)
 
             # Process upright alignment
             if use_diffusion or use_clip_energy or use_dino_energy:
-                rot_ims = torch.cat(
-                    [rotate(im.clone().squeeze().unsqueeze(0), a) for a in angles]
+                upright_candidate_ims, upright_candidate_angles, upright_candidate_names = build_alignment_candidates(
+                    im,
+                    angles,
+                    stn_model=stn_model,
                 )
 
                 diff_score = 0
                 if use_diffusion and diffusion_model is not None:
-                    masked_ims = rot_ims
+                    masked_ims = upright_candidate_ims
                     if octagon_mask is not None:
-                        masked_ims = rot_ims * octagon_mask
+                        masked_ims = upright_candidate_ims * octagon_mask
                     diff_score = diff_energy(
                         masked_ims, diffusion_model, args.diffusion
                     )
 
                 uncond_cls_score = 0
                 if use_clip_energy and clip_model is not None:
-                    if args.clip_energy.use_entropy:
+                    if hasattr(args.clip_energy, "use_entropy") and args.clip_energy.use_entropy:
                         uncond_cls_score = entropy_clip_energy(
-                            rot_ims, clip_model, args.clip_energy
+                            upright_candidate_ims, clip_model, args.clip_energy
                         )
                     else:
                         uncond_cls_score = uncond_clip_energy(
-                            rot_ims, clip_model, args.clip_energy
+                            upright_candidate_ims, clip_model, args.clip_energy
                         )
 
                 dino_score = 0
                 if use_dino_energy and dino_model is not None and dino_preprocess is not None:
                     dino_score = dino_variance_energy(
-                        dino_preprocess(rot_ims), dino_model, args.dino_energy
+                        dino_preprocess(upright_candidate_ims), dino_model, args.dino_energy
                     )
 
                 final_score = (
@@ -401,14 +485,20 @@ def main() -> None:
                     + args.clip_energy.factor * uncond_cls_score
                     + args.dino_energy.factor * dino_score
                 )
-                best_angle = angles[np.argmin(final_score)]
+
+                upright_best_idx = int(np.argmin(final_score))
+                upright_best_angle = upright_candidate_angles[upright_best_idx]
+                upright_best_candidate_name = upright_candidate_names[upright_best_idx]
             else:
                 raise ValueError("No alignment method specified")
 
-            im_realign = rotate(im.clone(), best_angle)
+            im_upright_realign = upright_candidate_ims[upright_best_idx : upright_best_idx + 1]
             results["correct_upright_align"].append(
-                evaluate_img(im_realign, classifier, label)
+                evaluate_img(im_upright_realign, classifier, label)
             )
+            results["upright_inferred_angles"].append(upright_best_angle)
+            results["upright_selected_candidates"].append(upright_best_candidate_name)
+            results["upright_selected_is_stn"].append(int(upright_best_candidate_name == "stn"))
 
             # Update progress bar
             pbar.set_postfix_str(generate_stats(results))
@@ -416,6 +506,7 @@ def main() -> None:
     # Print and save final results
     print(generate_stats(results))
     save_results(results, args)
+
 
 if __name__ == "__main__":
     main()

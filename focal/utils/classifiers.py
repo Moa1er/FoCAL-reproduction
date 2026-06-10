@@ -66,7 +66,12 @@ class CLIPClassifier:
         clip_model, _, _ = create_model_and_transforms(
             "ViT-H-14", pretrained="laion2b_s32b_b79k"
         )
+        # Cheaper alternative:
+        # clip_model, _, _ = create_model_and_transforms(
+        #    "ViT-B-32", pretrained="laion2b_s34b_b79k"
+        # )
         clip_model.eval().to(self.device)
+        #clip_tokenizer = get_tokenizer("ViT-B-32")
         clip_tokenizer = get_tokenizer("ViT-H-14")
         return clip_model, clip_preprocess, clip_tokenizer
 
@@ -133,6 +138,73 @@ class CLIPClassifier:
             im_enc = self._encode_im(im, clip_model, clip_preprocess)
             im_enc = F.normalize(im_enc, dim=-1)
             return im_enc @ text_enc.T
+
+
+class SigLIP2Classifier:
+    """SigLIP-based image classifier."""
+
+    def __init__(
+        self, prompts: List[str], device: str = "cuda", *args, **kwargs
+    ) -> None:
+        """Initialize SigLIP classifier.
+
+        Args:
+            prompts: List of text prompts for zero-shot classification
+            device: Device to run model on
+            *args: Additional positional arguments (unused)
+            **kwargs: Additional keyword arguments (unused)
+        """
+        from transformers import AutoProcessor, AutoModel
+        
+        self.device = device
+        # Using a widely available siglip model
+        model_name = "google/siglip-base-patch16-224"
+        self.processor = AutoProcessor.from_pretrained(model_name)
+        self.model = AutoModel.from_pretrained(model_name).eval().to(device)
+
+        # Encode text prompts once
+        with torch.inference_mode():
+            self.text_inputs = self.processor(text=prompts, return_tensors="pt", padding="max_length", truncation=True).to(device)
+            out = self.model.get_text_features(**self.text_inputs)
+            self.text_embeds = out.pooler_output if hasattr(out, 'pooler_output') else out[1]
+            self.text_embeds = F.normalize(self.text_embeds, dim=-1)
+
+    def __call__(self, im: torch.Tensor) -> torch.Tensor:
+        """Classify input image.
+
+        Args:
+            im: Input image tensor
+
+        Returns:
+            Classification logits
+        """
+        if len(im.shape) == 3:
+            im = im.unsqueeze(0)
+            
+        with torch.inference_mode():
+            # Apply SigLIP-specific preprocessing
+            # The input images match the original torchvision pipeline, but transformers 
+            # processor expects a certain format. However, rotation_2D.py passes tensors.
+            # SigLIP expects inputs in [-1, 1] range via its specific processor or we can format manually.
+            # Convert back to PIL or use processor directly on tensors
+            
+            # Since im is already a torch tensor but may not match processor's expected internal state exactly,
+            # we can pass it as torch tensor if it's in [0,1] floating point.
+            # To be safe, we turn torch tensor [0, 1] to a list of uint8 or directly let the processor handle it.
+            
+            im_uint8 = [(im_ * 255).clamp(0, 255).to(torch.uint8) for im_ in im]
+            inputs = self.processor(images=im_uint8, return_tensors="pt").to(self.device)
+            
+            out_img = self.model.get_image_features(**inputs)
+            image_embeds = out_img.pooler_output if hasattr(out_img, 'pooler_output') else out_img[1]
+            image_embeds = F.normalize(image_embeds, dim=-1)
+            
+            # SigLIP logits: (image_embeds @ text_embeds.T) * logit_scale + logit_bias
+            scale = self.model.logit_scale.exp()
+            bias = self.model.logit_bias
+            logits = (image_embeds @ self.text_embeds.T) * scale + bias
+            
+        return logits
 
 
 class DINOv2Classifier:
