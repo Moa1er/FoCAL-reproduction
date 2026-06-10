@@ -25,8 +25,8 @@ DEFAULT_BATCH_SIZE = 5
 DEFAULT_NOISE_TENSORS = 50
 
 
-class StableDiffusion:
-    """Stable Diffusion model wrapper for energy-based scoring."""
+class SDLossEstimator:
+    """stable diffusion model wrapper for energy-based scoring."""
 
     def __init__(
         self,
@@ -36,66 +36,56 @@ class StableDiffusion:
         num_noise_tensors: int = DEFAULT_NOISE_TENSORS,
         device: str = "cuda",
     ) -> None:
-        """Initialize the Stable Diffusion model.
-
-        Args:
-            model_id: Model identifier for Stable Diffusion
-            size: Size of input images (must be in ALLOWED_SIZES)
-            custom_prompt: Optional custom prompt for text encoding
-            num_noise_tensors: Number of noise tensors to pre-generate
-
-        Raises:
-            ValueError: If size is not in ALLOWED_SIZES
-        """
+        """initialize the stable diffusion model."""
         if size not in ALLOWED_SIZES:
-            raise ValueError(f"Size must be one of {ALLOWED_SIZES}, got {size}")
+            raise ValueError(f"size must be one of {ALLOWED_SIZES}, got {size}")
 
         self.model_id = model_id
         self.size = size
         self.prompt = custom_prompt or ""
         self.device = device
 
-        # Pre-generate noise tensors
+        # pre-generate noise tensors
         self.noise_tensor_list = [
             torch.randn(1000, 4, size // 8, size // 8).to(self.device).half()
             for _ in range(num_noise_tensors)
         ]
 
-        # Initialize model components
+        # initialize model components
         self._setup_pipeline()
         self._setup_text_encoder()
         self._setup_transform()
 
     def _setup_pipeline(self) -> None:
-        """Setup the Stable Diffusion pipeline and scheduler."""
-        # Initialize scheduler
+        """setup the stable diffusion pipeline and scheduler."""
+        # initialize scheduler
         scheduler = EulerDiscreteScheduler.from_pretrained(
             self.model_id, subfolder="scheduler"
         )
 
-        # Initialize pipeline
+        # initialize pipeline
         pipe = StableDiffusionPipeline.from_pretrained(
             self.model_id, scheduler=scheduler, torch_dtype=torch.float16
         )
         pipe.enable_xformers_memory_efficient_attention()
         pipe.to(self.device)
 
-        # Set models to eval mode and convert to half precision
+        # set models to eval mode and convert to half precision
         pipe.vae = pipe.vae.eval().half().to(self.device)
         pipe.unet = pipe.unet.eval().half().to(self.device)
 
-        # Move scheduler parameters to GPU
+        # move scheduler parameters to GPU
         scheduler.alphas_cumprod = scheduler.alphas_cumprod.to(self.device).half()
 
         self.pipe = pipe
         self.scheduler = scheduler
 
     def _setup_text_encoder(self) -> None:
-        """Setup the text encoder and generate embeddings."""
+        """setup the text encoder and generate embeddings."""
         tokenizer = self.pipe.tokenizer
         text_encoder = self.pipe.text_encoder.eval().to(self.device)
 
-        # Tokenize prompt
+        # tokenize prompt
         text_input = tokenizer(
             [self.prompt],
             padding="max_length",
@@ -104,12 +94,12 @@ class StableDiffusion:
             return_tensors="pt",
         )
 
-        # Generate text embeddings
+        # generate text embeddings
         with torch.inference_mode():
             self.text_embeddings = text_encoder(text_input.input_ids.to(self.device))[0]
 
     def _setup_transform(self) -> None:
-        """Setup image transformation pipeline."""
+        """setup image transformation pipeline."""
         self.transform = transforms.Compose(
             [
                 transforms.Resize(self.size),
@@ -128,26 +118,8 @@ class StableDiffusion:
         return_all_steps: bool = False,
         noise_tensor_idx: int = 0,
     ) -> np.ndarray:
-        """Calculate diffusion loss for images at selected timesteps.
-
-        Args:
-            im: Input image tensor of shape (B, C, H, W)
-            step_min: Minimum timestep to evaluate
-            step_max: Maximum timestep to evaluate
-            step_stride: Stride between timesteps
-            batchsize: Batch size for processing
-            return_all_steps: Whether to return losses for all steps
-            noise_tensor_idx: Index of noise tensor to use
-
-        Returns:
-            Array of diffusion losses. If return_all_steps is True,
-            shape is (B, num_steps), otherwise (B,)
-
-        Raises:
-            ValueError: If input parameters are invalid
-            RuntimeError: If CUDA runs out of memory
-        """
-        # Validate input parameters
+        """calculate diffusion loss for images at selected timesteps."""
+        # validate input parameters
         if step_min >= step_max:
             raise ValueError(
                 f"step_min ({step_min}) must be less than step_max ({step_max})"
@@ -171,10 +143,10 @@ class StableDiffusion:
                 B, C, H, W = im.shape
                 n_steps = len(steps)
 
-                # Convert image to half precision
+                # convert image to half precision
                 im = im.half()
 
-                # Prepare indices and parameters
+                # prepare indices and parameters
                 im_idx = (
                     torch.arange(B)
                     .int()
@@ -191,30 +163,30 @@ class StableDiffusion:
                     .to(self.device)
                 )
 
-                # Process batches
+                # process batches
                 for i in range(0, B * n_steps, batchsize):
                     batch_slice = slice(i, i + batchsize)
 
-                    # Prepare batch inputs
+                    # prepare batch inputs
                     im_batch = im[im_idx[batch_slice]].to(self.device)
                     noise_batch = noise[batch_slice].to(self.device)
                     text_input_batch = text_input[batch_slice].to(self.device)
                     alphas_batch = alphas[batch_slice].to(self.device)
                     steps_batch = steps[batch_slice].to(self.device)
 
-                    # Transform images
+                    # transform images
                     im_batch = self.transform(im_batch)
 
-                    # Generate latents
+                    # generate latents
                     latent_batch = self.pipe.vae.encode(im_batch).latent_dist.mean
                     latent_batch *= 0.18215
 
-                    # Add noise to latents
+                    # add noise to latents
                     noised_latent_batch = latent_batch * (
                         alphas_batch**0.5
                     ) + noise_batch * ((1 - alphas_batch) ** 0.5)
 
-                    # Predict noise and calculate loss
+                    # predict noise and calculate loss
                     noise_pred_batch = self.pipe.unet(
                         noised_latent_batch,
                         steps_batch,
@@ -231,48 +203,14 @@ class StableDiffusion:
 
                     losses.append(loss)
 
-                # Reshape and return results
+                # reshape and return results
                 losses = np.concatenate(losses).reshape(B, n_steps)
                 return losses if return_all_steps else losses.mean(axis=1)
 
         except RuntimeError as e:
             if "out of memory" in str(e):
                 raise RuntimeError(
-                    f"CUDA out of memory. Try reducing batch size (currently {batchsize}) "
+                    f"cuda out of memory. try reducing batch size (currently {batchsize}) "
                     "or using a smaller model/image size"
                 ) from e
             raise
-
-
-def test_diffusion_models() -> None:
-    """Test the Stable Diffusion model with different configurations.
-
-    This function tests the model with various image sizes and batch sizes
-    to verify functionality and performance.
-    """
-    print("Testing Stable Diffusion model configurations...")
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
-
-    # Create test image
-    img = torch.randn(3, 3, 256, 256).to(device).half()
-
-    for size in ALLOWED_SIZES:
-        print(f"\nTesting size {size}:")
-        try:
-            diff = StableDiffusion(size=size, device=device)
-
-            for batch_size in [1, 2, 5, 6]:
-                try:
-                    scores = diff.score(img, batchsize=batch_size)
-                    print(f"  Batch size {batch_size}: scores shape {scores.shape}")
-                except RuntimeError as e:
-                    print(f"  Batch size {batch_size}: failed - {str(e)}")
-
-        except Exception as e:
-            print(f"  Failed to initialize model: {str(e)}")
-
-
-if __name__ == "__main__":
-    test_diffusion_models()

@@ -1,9 +1,7 @@
-"""Image classification models for 2D rotation tasks."""
+"""image classification models for 2D rotation tasks."""
 
 from typing import List, Tuple
 
-from PIL import Image
-import numpy as np
 import torch
 import torch.nn.functional as F
 import torchvision
@@ -11,23 +9,16 @@ import torchvision.transforms as transforms
 from torchvision.transforms.functional import InterpolationMode
 from open_clip import create_model_and_transforms, get_tokenizer
 from transformers import AutoModelForImageClassification
-from focal.utils.equiadapt_classifier_utils import get_prediction_network
+from focal.utils.equiadapt_classifier_utils import setup_prediction_network
 
 
-class CLIPClassifier:
-    """CLIP-based image classifier."""
+class ZeroShotCLIPClassifier:
+    """clip-based image classifier."""
 
     def __init__(
         self, prompts: List[str], device: str = "cuda", *args, **kwargs
     ) -> None:
-        """Initialize CLIP classifier.
-
-        Args:
-            prompts: List of text prompts for zero-shot classification
-            device: Device to run model on
-            *args: Additional positional arguments (unused)
-            **kwargs: Additional keyword arguments (unused)
-        """
+        """initialize clip classifier."""
         self.device = device
         self.clip_model, self.clip_preprocess, self.clip_tokenizer = (
             self._setup_clip_model()
@@ -35,24 +26,13 @@ class CLIPClassifier:
         self.text_enc = self._encode_text(self.clip_model, self.clip_tokenizer, prompts)
 
     def __call__(self, im: torch.Tensor) -> torch.Tensor:
-        """Classify input image.
-
-        Args:
-            im: Input image tensor
-
-        Returns:
-            Classification logits
-        """
+        """classify input image."""
         return self._classifier(
             im, self.clip_model, self.clip_preprocess, self.text_enc
         )
 
     def _setup_clip_model(self) -> Tuple[torch.nn.Module, transforms.Compose, object]:
-        """Setup CLIP model components.
-
-        Returns:
-            Tuple of (model, preprocessing transforms, tokenizer)
-        """
+        """setup clip model components."""
         clip_preprocess = transforms.Compose(
             [
                 transforms.Resize(224, interpolation=InterpolationMode.BILINEAR),
@@ -66,28 +46,14 @@ class CLIPClassifier:
         clip_model, _, _ = create_model_and_transforms(
             "ViT-H-14", pretrained="laion2b_s32b_b79k"
         )
-        # Cheaper alternative:
-        # clip_model, _, _ = create_model_and_transforms(
-        #    "ViT-B-32", pretrained="laion2b_s34b_b79k"
-        # )
         clip_model.eval().to(self.device)
-        #clip_tokenizer = get_tokenizer("ViT-B-32")
         clip_tokenizer = get_tokenizer("ViT-H-14")
         return clip_model, clip_preprocess, clip_tokenizer
 
     def _encode_text(
         self, clip_model: torch.nn.Module, clip_tokenizer: object, prompts: List[str]
     ) -> torch.Tensor:
-        """Encode text prompts using CLIP model.
-
-        Args:
-            clip_model: CLIP model
-            clip_tokenizer: CLIP tokenizer
-            prompts: List of text prompts
-
-        Returns:
-            Encoded text embeddings
-        """
+        """encode text prompts using clip model."""
         with torch.inference_mode():
             batchsize = 100
             text_enc = torch.cat(
@@ -108,11 +74,11 @@ class CLIPClassifier:
         clip_model: torch.nn.Module,
         clip_preprocess: transforms.Compose,
     ) -> torch.Tensor:
-        """Encode image using CLIP model (Batched)."""
+        """encode image using clip model (batched)."""
         if len(im.shape) == 3:
             im = im.unsqueeze(0)
 
-        # Apply preprocessing natively across the batch of rotations to avoid sequential bottlenecks.
+        # apply preprocessing natively across the batch of rotations to avoid sequential bottlenecks.
         im_processed = clip_preprocess(im).to(self.device)
         return clip_model.encode_image(im_processed).cpu()
 
@@ -123,46 +89,28 @@ class CLIPClassifier:
         clip_preprocess: transforms.Compose,
         text_enc: torch.Tensor,
     ) -> torch.Tensor:
-        """Classify image using CLIP model.
-
-        Args:
-            im: Input image tensor
-            clip_model: CLIP model
-            clip_preprocess: Preprocessing transforms
-            text_enc: Encoded text embeddings
-
-        Returns:
-            Classification logits
-        """
+        """classify image using clip model."""
         with torch.inference_mode():
             im_enc = self._encode_im(im, clip_model, clip_preprocess)
             im_enc = F.normalize(im_enc, dim=-1)
             return im_enc @ text_enc.T
 
 
-class SigLIP2Classifier:
-    """SigLIP-based image classifier."""
+class ZeroShotSigLIPClassifier:
+    """siglip-based image classifier."""
 
     def __init__(
         self, prompts: List[str], device: str = "cuda", *args, **kwargs
     ) -> None:
-        """Initialize SigLIP classifier.
-
-        Args:
-            prompts: List of text prompts for zero-shot classification
-            device: Device to run model on
-            *args: Additional positional arguments (unused)
-            **kwargs: Additional keyword arguments (unused)
-        """
+        """initialize siglip classifier."""
         from transformers import AutoProcessor, AutoModel
         
         self.device = device
-        # Using a widely available siglip model
         model_name = "google/siglip-base-patch16-224"
         self.processor = AutoProcessor.from_pretrained(model_name)
         self.model = AutoModel.from_pretrained(model_name).eval().to(device)
 
-        # Encode text prompts once
+        # encode text prompts once
         with torch.inference_mode():
             self.text_inputs = self.processor(text=prompts, return_tensors="pt", padding="max_length", truncation=True).to(device)
             out = self.model.get_text_features(**self.text_inputs)
@@ -170,28 +118,12 @@ class SigLIP2Classifier:
             self.text_embeds = F.normalize(self.text_embeds, dim=-1)
 
     def __call__(self, im: torch.Tensor) -> torch.Tensor:
-        """Classify input image.
-
-        Args:
-            im: Input image tensor
-
-        Returns:
-            Classification logits
-        """
+        """classify input image."""
         if len(im.shape) == 3:
             im = im.unsqueeze(0)
             
         with torch.inference_mode():
-            # Apply SigLIP-specific preprocessing
-            # The input images match the original torchvision pipeline, but transformers 
-            # processor expects a certain format. However, rotation_2D.py passes tensors.
-            # SigLIP expects inputs in [-1, 1] range via its specific processor or we can format manually.
-            # Convert back to PIL or use processor directly on tensors
-            
-            # Since im is already a torch tensor but may not match processor's expected internal state exactly,
-            # we can pass it as torch tensor if it's in [0,1] floating point.
-            # To be safe, we turn torch tensor [0, 1] to a list of uint8 or directly let the processor handle it.
-            
+            # convert to uint8 for processor
             im_uint8 = [(im_ * 255).clamp(0, 255).to(torch.uint8) for im_ in im]
             inputs = self.processor(images=im_uint8, return_tensors="pt").to(self.device)
             
@@ -199,7 +131,7 @@ class SigLIP2Classifier:
             image_embeds = out_img.pooler_output if hasattr(out_img, 'pooler_output') else out_img[1]
             image_embeds = F.normalize(image_embeds, dim=-1)
             
-            # SigLIP logits: (image_embeds @ text_embeds.T) * logit_scale + logit_bias
+            # siglip logits: (image_embeds @ text_embeds.T) * logit_scale + logit_bias
             scale = self.model.logit_scale.exp()
             bias = self.model.logit_bias
             logits = (image_embeds @ self.text_embeds.T) * scale + bias
@@ -207,7 +139,9 @@ class SigLIP2Classifier:
         return logits
 
 
-class DINOv2Classifier:
+class DINOv2ClassifierWrapper:
+    """dinov2 classifier wrapper."""
+
     def __init__(self, prompts, device: str = "cuda", *args, **kwargs) -> None:
         self.device = device
         self.model = AutoModelForImageClassification.from_pretrained(
@@ -229,25 +163,15 @@ class DINOv2Classifier:
         return self.model(im).logits
 
 
-class ResNet50:
-    """ResNet-50 classifier pretrained on ImageNet."""
+class PretrainedResNet50:
+    """resnet-50 classifier pretrained on imagenet."""
 
     def __init__(
         self, prompts: List[str], device: str = "cuda", *args, **kwargs
     ) -> None:
-        """Initialize ResNet-50 classifier.
-
-        Args:
-            prompts: List of text prompts (must be length 1000 for ImageNet)
-            device: Device to run model on
-            *args: Additional positional arguments (unused)
-            **kwargs: Additional keyword arguments (unused)
-
-        Raises:
-            AssertionError: If number of prompts is not 1000
-        """
+        """initialize resnet-50 classifier."""
         assert len(prompts) == 1000, (
-            "ResNet50 only supports 1000 classes (ImageNet). Your dataset is probably not ImageNet."
+            "resnet50 only supports 1000 classes (imagenet). your dataset is probably not imagenet."
         )
         self.device = device
         self.model = torchvision.models.resnet50(pretrained=True)
@@ -263,14 +187,7 @@ class ResNet50:
         )
 
     def __call__(self, im: torch.Tensor) -> torch.Tensor:
-        """Classify input image.
-
-        Args:
-            im: Input image tensor
-
-        Returns:
-            Classification logits
-        """
+        """classify input image."""
         if len(im.shape) == 3:
             im = im.unsqueeze(0)
         im = self.transform(im).to(self.device)
@@ -278,25 +195,15 @@ class ResNet50:
             return self.model(im).cpu()
 
 
-class ViTB:
-    """ViT-B/16 classifier pretrained on ImageNet."""
+class PretrainedViTB:
+    """vit-b/16 classifier pretrained on imagenet."""
 
     def __init__(
         self, prompts: List[str], device: str = "cuda", *args, **kwargs
     ) -> None:
-        """Initialize ViT-B/16 classifier.
-
-        Args:
-            prompts: List of text prompts (must be length 1000 for ImageNet)
-            device: Device to run model on
-            *args: Additional positional arguments (unused)
-            **kwargs: Additional keyword arguments (unused)
-
-        Raises:
-            AssertionError: If number of prompts is not 1000
-        """
+        """initialize vit-b/16 classifier."""
         assert len(prompts) == 1000, (
-            "ViT-B only supports 1000 classes (ImageNet). Your dataset is probably not ImageNet."
+            "vit-b only supports 1000 classes (imagenet). your dataset is probably not imagenet."
         )
         self.device = device
         self.model = torchvision.models.vit_b_16(pretrained=True)
@@ -312,14 +219,7 @@ class ViTB:
         )
 
     def __call__(self, im: torch.Tensor) -> torch.Tensor:
-        """Classify input image.
-
-        Args:
-            im: Input image tensor
-
-        Returns:
-            Classification logits
-        """
+        """classify input image."""
         if len(im.shape) == 3:
             im = im.unsqueeze(0)
         im = self.transform(im).to(self.device)
@@ -327,28 +227,16 @@ class ViTB:
             return self.model(im).cpu()
 
 
-class PRLC_R50:
-    """PRLC's version of ResNet-50"""
+class EquivariantResNet50:
+    """equivariant version of resnet-50."""
 
     def __init__(
         self, prompts: List[str], device: str, ckpt: str, dataset: str, *args, **kwargs
     ) -> None:
-        """Initialize ResNet-50 classifier.
-
-        Args:
-            prompts: List of text prompts
-            device: Device to run model on
-            ckpt: Path to pretrained checkpoint
-            dataset: Dataset name (used for input shape and number of classes)
-            *args: Additional positional arguments (unused)
-            **kwargs: Additional keyword arguments (unused)
-
-        Raises:
-            AssertionError: If number of prompts is not 1000
-        """
+        """initialize resnet-50 classifier."""
         self.device = device
 
-        self.model = get_prediction_network(
+        self.model = setup_prediction_network(
             architecture="resnet50",
             dataset_name=dataset,
             use_pretrained=False,
@@ -380,7 +268,7 @@ class PRLC_R50:
             prediction_network_params = mapped_params
         else:
             raise KeyError(
-                "Checkpoint does not contain 'state_dict' or 'prediction_network_state_dict'"
+                "checkpoint does not contain 'state_dict' or 'prediction_network_state_dict'"
             )
         self.model.load_state_dict(prediction_network_params)
 
@@ -393,14 +281,7 @@ class PRLC_R50:
         )
 
     def __call__(self, im: torch.Tensor) -> torch.Tensor:
-        """Classify input image.
-
-        Args:
-            im: Input image tensor
-
-        Returns:
-            Classification logits
-        """
+        """classify input image."""
         if len(im.shape) == 3:
             im = im.unsqueeze(0)
         im = self.transform(im).to(self.device)
@@ -408,28 +289,16 @@ class PRLC_R50:
             return self.model(im).cpu()
 
 
-class PRLC_ViTB:
-    """PRLC's version of ViT-B"""
+class EquivariantViTB:
+    """equivariant version of vit-b."""
 
     def __init__(
         self, prompts: List[str], device: str, ckpt: str, dataset: str, *args, **kwargs
     ) -> None:
-        """Initialize ViT-B classifier.
-
-        Args:
-            prompts: List of text prompts
-            device: Device to run model on
-            ckpt: Path to pretrained checkpoint
-            dataset: Dataset name (used for input shape and number of classes)
-            *args: Additional positional arguments (unused)
-            **kwargs: Additional keyword arguments (unused)
-
-        Raises:
-            AssertionError: If number of prompts is not 1000
-        """
+        """initialize vit-b classifier."""
         self.device = device
 
-        self.model = get_prediction_network(
+        self.model = setup_prediction_network(
             architecture="vit",
             dataset_name=dataset,
             use_pretrained=False,
@@ -457,7 +326,7 @@ class PRLC_ViTB:
             prediction_network_params = mapped_params
         else:
             raise KeyError(
-                "Checkpoint does not contain 'state_dict' or 'prediction_network_state_dict'"
+                "checkpoint does not contain 'state_dict' or 'prediction_network_state_dict'"
             )
         self.model.load_state_dict(prediction_network_params)
 
@@ -470,74 +339,9 @@ class PRLC_ViTB:
         )
 
     def __call__(self, im: torch.Tensor) -> torch.Tensor:
-        """Classify input image.
-
-        Args:
-            im: Input image tensor
-
-        Returns:
-            Classification logits
-        """
+        """classify input image."""
         if len(im.shape) == 3:
             im = im.unsqueeze(0)
         im = self.transform(im).to(self.device)
         with torch.inference_mode():
             return self.model(im).cpu()
-
-
-class _OVSEGArgs:
-    """Helper class for OVSEG args"""
-
-    def __init__(self, config_file: str, opts: List[str]) -> None:
-        """Initialize _OVSEGArgs."""
-        self.config_file = config_file
-        self.opts = opts
-
-
-class OVSEGClassifier:
-    """OVSEG CLIP-based image classifier."""
-
-    def setup_cfg(self, args: _OVSEGArgs):
-        from detectron2.config import get_cfg
-        from detectron2.projects.deeplab import add_deeplab_config
-        from third_party_modified.ovseg.open_vocab_seg import add_ovseg_config
-
-        # from OVSEG's demo.py
-        # load config from file and command-line arguments
-        cfg = get_cfg()
-        # for poly lr schedule
-        add_deeplab_config(cfg)
-        add_ovseg_config(cfg)
-        cfg.merge_from_file(args.config_file)
-        cfg.merge_from_list(args.opts)
-        cfg.freeze()
-        return cfg
-
-    def __init__(self, config_file: str, opts: List[str], *args, **kwargs) -> None:
-        """Initialize OVSEG CLIP classifier.
-
-        Args:
-            config_file: Path to OVSEG config file
-            opts: Additional options (e.g., model weights)
-            *args: Additional positional arguments (unused)
-            **kwargs: Additional keyword arguments (unused)
-        """
-        from third_party_modified.ovseg.open_vocab_seg.utils import VisualizationDemo
-
-        args = _OVSEGArgs(config_file, opts)
-        cfg = self.setup_cfg(args)
-        self._model = VisualizationDemo(cfg)
-
-    def __call__(self, im: Image.Image, classes: List[str]) -> torch.Tensor:
-        """Classify input image.
-
-        Args:
-            im: Input image (PIL), RGB
-            classes: List of class names
-
-        Returns:
-            Classification logits
-        """
-        im = np.asarray(im)
-        im = im[:, :, ::-1]  # ov-seg expects BGR
-        return self._model.get_classification_clip(im, classes)[0]

@@ -9,7 +9,7 @@ import torch.nn as nn
 import torchvision
 
 
-class PredictionNetwork(nn.Module):
+class ClassifierHeadWrapper(nn.Module):
     def __init__(self, encoder: torch.nn.Module, feature_dim: int, num_classes: int):
         super().__init__()
         self.encoder = encoder
@@ -21,21 +21,7 @@ class PredictionNetwork(nn.Module):
         return self.predictor(reps)
 
 
-def get_dataset_specific_info(dataset_name: str) -> tuple:
-    dataset_info = {
-        "cifar10": (nn.CrossEntropyLoss(), (3, 224, 224), 10),
-        "cifar100": (nn.CrossEntropyLoss(), (3, 224, 224), 100),
-        "stl10": (nn.CrossEntropyLoss(), (3, 224, 224), 10),
-        "imagenet": (nn.CrossEntropyLoss(), (3, 224, 224), 1000),
-    }
-
-    if dataset_name not in dataset_info:
-        raise ValueError("Dataset not implemented for now.")
-
-    return dataset_info[dataset_name]
-
-
-def get_prediction_network(
+def setup_prediction_network(
     architecture: str = "resnet50",
     dataset_name: str = "cifar10",
     use_pretrained: bool = False,
@@ -78,7 +64,7 @@ def get_prediction_network(
         elif architecture == "vit":
             feature_dim = encoder.heads.head.in_features
             encoder.heads.head = nn.Identity()
-        prediction_network = PredictionNetwork(encoder, feature_dim, num_classes)
+        prediction_network = ClassifierHeadWrapper(encoder, feature_dim, num_classes)
     else:
         prediction_network = encoder
 

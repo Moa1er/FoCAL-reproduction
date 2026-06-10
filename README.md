@@ -70,13 +70,16 @@ The `python -m experiments.rotation_2D` script accepts the following arguments:
 - **`clip_energy`** (object, default: `CLIPEnergyArgs(factor=1.0)`):
   Classifier energy arguments.
 
+- **`dino_energy`** (object, default: `DINOEnergyArgs(factor=0.0)`):
+  DINO variance energy arguments.
+
 - **`seed`** (int, default: `0`):
   Random seed for reproducibility.
 
 - **`device`** (str, default: `"cuda:0"`):
   Device to run the experiment on (e.g., `"cuda:0"`, `"cpu"`).
 
-- **`stn`** (object, default: `STNArgs(enabled=False, ckpt=None, input_size=32, kernel_size=3)`):
+- **`stn`** (object, default: `STNConfig(enabled=False, ckpt=None, input_size=32, kernel_size=3)`):
   Optional Spatial Transformer Network (STN) candidate arguments. When enabled, the script adds the STN-transformed image as an extra candidate alongside the standard FoCAL candidates.
 
   STN sub-arguments:
